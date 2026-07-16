@@ -8,5 +8,6 @@ venv/
 dist/
 build/
 *.egg-info/
+.env
 mewcode.yaml
 tmp.e2e.*.yaml

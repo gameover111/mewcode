@@ -42,22 +42,34 @@ def run_chat_loop(
         request = ChatRequest(messages=conversation.snapshot(), config=config)
         assistant_parts: list[str] = []
 
-        output_func("MewCode> ")
+        _emit(output_func, "MewCode> ", end="")
         try:
             for event in provider.stream_chat(request):
                 if event.type == "text":
                     assistant_parts.append(event.content)
-                    output_func(event.content)
+                    _emit(output_func, event.content, end="")
                 elif event.type == "thinking" and event.content:
-                    output_func(f"[思考] {event.content}")
+                    _emit(output_func, "", end="\n")
+                    _emit(output_func, f"[思考] {event.content}")
                 elif event.type == "error":
-                    output_func(f"错误：{event.content}")
+                    _emit(output_func, "", end="\n")
+                    _emit(output_func, f"错误：{event.content}")
                 elif event.type == "done":
                     break
         except ProviderError as exc:
-            output_func(f"错误：{exc}")
+            _emit(output_func, "", end="\n")
+            _emit(output_func, f"错误：{exc}")
             continue
+
+        output_func("")
 
         assistant_text = "".join(assistant_parts)
         if assistant_text:
             conversation.add_assistant_message(assistant_text)
+
+
+def _emit(output_func: OutputFunc, text: str, end: str = "\n") -> None:
+    if output_func is print:
+        print(text, end=end, flush=True)
+    else:
+        output_func(text)
