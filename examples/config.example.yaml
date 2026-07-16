@@ -1,0 +1,15 @@
+# Anthropic Claude 示例
+name: claude-default
+protocol: anthropic
+model: claude-3-5-sonnet-latest
+base_url: https://api.anthropic.com/v1/messages
+api_key: sk-ant-your-key
+thinking: false
+
+# OpenAI 示例写法：
+# name: openai-default
+# protocol: openai
+# model: gpt-4o-mini
+# base_url: https://api.openai.com/v1/chat/completions
+# api_key: sk-your-key
+# thinking: false
