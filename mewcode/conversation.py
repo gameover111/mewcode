@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 
@@ -12,8 +12,12 @@ class Conversation:
     def add_user_message(self, content: str) -> None:
         self.messages.append(ChatMessage(role="user", content=content))
 
-    def add_assistant_message(self, content: str) -> None:
-        self.messages.append(ChatMessage(role="assistant", content=content))
+    def add_assistant_message(
+        self, content: str, tool_calls: list[ToolCall] | None = None
+    ) -> None:
+        self.messages.append(
+            ChatMessage(role="assistant", content=content, tool_calls=tool_calls)
+        )
 
     def add_assistant_tool_call(self, tool_call: ToolCall) -> None:
         self.messages.append(

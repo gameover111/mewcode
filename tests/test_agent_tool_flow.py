@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Iterator
 import json
@@ -52,6 +52,7 @@ def test_agent_keeps_plain_chat_path(tmp_path: Path):
 
     assert [event.content for event in events if event.type == "text"] == ["你好"]
     assert conversation.messages[-1].role == "assistant"
+    # Agent Loop 每轮都带 tools
     assert provider.requests[0].tools
 
 
@@ -84,9 +85,17 @@ def test_agent_executes_tool_and_requests_final_reply(tmp_path: Path):
         )
     )
 
-    assert [event.type for event in events] == ["tool_start", "tool_result", "text", "done"]
+    # Agent Loop 现在产生更多事件（user_message, tool_start, tool_result, next round: text, final, done）
+    event_types = [e.type for e in events]
+    assert "tool_start" in event_types
+    assert "tool_result" in event_types
+    # 第二轮无工具调用，产生 final 事件
+    assert "final" in event_types
+    assert "done" in event_types
+    # Agent Loop 每轮都携带 tools
     assert len(provider.requests) == 2
-    assert provider.requests[1].tools is None
+    assert provider.requests[1].tools is not None
+    # 对话历史中有 tool_calls 和 tool result
     assert conversation.messages[-3].tool_calls[0].name == "read_file"
     assert conversation.messages[-2].role == "tool"
     assert "MewCode readme" in conversation.messages[-2].content
@@ -94,7 +103,7 @@ def test_agent_executes_tool_and_requests_final_reply(tmp_path: Path):
 
 
 def test_agent_handles_unknown_tool_as_structured_result(tmp_path: Path):
-    conversation = Conversation([ChatMessage(role="user", content="调用不存在")])
+    conversation = Conversation([ChatMessage(role="user", content="调用不存在的")])
     provider = ScriptedProvider(
         [
             [
@@ -147,26 +156,25 @@ def test_agent_handles_invalid_json_arguments(tmp_path: Path):
     assert "合法 JSON" in conversation.messages[-2].content
 
 
-def test_agent_stops_if_second_request_asks_for_tool(tmp_path: Path):
-    conversation = Conversation([ChatMessage(role="user", content="循环")])
+def test_agent_supports_multi_round_tool_calls(tmp_path: Path):
+    """Agent Loop 支持多轮工具调用（不同于 ch3 的单轮限制）"""
+    (tmp_path / "a.txt").write_text("aaa", encoding="utf-8")
+    conversation = Conversation([ChatMessage(role="user", content="读 a.txt")])
     provider = ScriptedProvider(
         [
             [
                 ProviderEvent(
                     type="tool_call",
-                    tool_call=ToolCall(
-                        id="call_1",
-                        name="read_file",
-                        arguments_json='{"path":"README.md"}',
-                    ),
+                    tool_call=ToolCall(id="call_1", name="read_file", arguments_json='{"path":"a.txt"}'),
                 )
             ],
             [
                 ProviderEvent(
                     type="tool_call",
-                    tool_call=ToolCall(id="call_2", name="read_file", arguments_json="{}"),
+                    tool_call=ToolCall(id="call_2", name="read_file", arguments_json='{"path":"a.txt"}'),
                 )
             ],
+            [ProviderEvent(type="text", content="完成"), ProviderEvent(type="done")],
         ]
     )
 
@@ -180,7 +188,9 @@ def test_agent_stops_if_second_request_asks_for_tool(tmp_path: Path):
         )
     )
 
-    assert any("只支持一次工具调用" in event.content for event in events)
+    # 应该正常完成，不会报错"只支持一次工具调用"
+    assert "只支持" not in " ".join(e.content for e in events if e.type == "error")
+    assert events[-1].type == "done"
 
 
 def test_agent_end_to_end_with_openai_compatible_sse(tmp_path: Path):
@@ -224,5 +234,4 @@ def test_agent_end_to_end_with_openai_compatible_sse(tmp_path: Path):
 
     assert len(captured_requests) == 2
     assert captured_requests[0]["tools"]
-    assert "tools" not in captured_requests[1]
     assert [event.content for event in events if event.type == "text"] == ["总结完成"]

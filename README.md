@@ -41,12 +41,29 @@ mewcode --config mewcode.yaml
 
 在对话中输入 `/exit` 或 `/quit` 退出。
 
-## 当前阶段不做
+## Agent Loop (ch4)
 
-- 不做多工具自动循环；一次用户请求最多执行一个工具回合。
-- 不做并行工具调用。
-- 不做跨工作区文件操作。
-- 不做长期记忆或会话持久化。
+MewCode 现在支持 ReAct 风格的 Agent Loop：模型可以自动多轮调用工具，直到任务完成。
+
+- --max-rounds N: 设置最大循环轮数（默认 8）。
+- --plan-only: 只允许读类工具（read_file、find_files、search_code），写类工具（write_file、replace_in_file、run_command）被拦截，最终输出计划供用户审批。
+- --timeout SECONDS: 设置整体超时秒数。
+
+示例：
+
+`ash
+# 正常执行（自动多轮循环）
+python -m mewcode --config mewcode.yaml
+
+# plan-only 模式
+python -m mewcode --config mewcode.yaml --plan-only
+
+# 限制最大轮数
+python -m mewcode --config mewcode.yaml --max-rounds 3
+
+# 限制整体超时 60 秒
+python -m mewcode --config mewcode.yaml --timeout 60
+`
 
 ## 工具系统
 

@@ -1,8 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
+from mewcode.agent import AgentOptions
 from mewcode.config import load_provider_config
 from mewcode.providers.base import ProviderError
 from mewcode.providers.factory import create_provider
@@ -15,6 +16,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         default="mewcode.yaml",
         help="YAML 配置文件路径，默认 mewcode.yaml",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=8,
+        help="Agent Loop 最大轮数，默认 8",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="plan-only 模式：只允许读类工具，输出计划供用户审批",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="整体超时秒数，不设置则无限制",
     )
     return parser
 
@@ -30,4 +48,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误：{exc}")
         return 1
 
-    return run_chat_loop(config, provider, workspace=Path.cwd())
+    options = AgentOptions(
+        max_rounds=args.max_rounds,
+        plan_only=args.plan_only,
+        overall_timeout_seconds=args.timeout,
+    )
+
+    return run_chat_loop(config, provider, workspace=Path.cwd(), options=options)
