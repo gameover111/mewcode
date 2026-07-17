@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Iterator, Literal, Protocol
 
 
 ProtocolName = Literal["anthropic", "openai"]
-MessageRole = Literal["user", "assistant", "tool"]
+MessageRole = Literal["system", "user", "assistant", "tool"]
 EventType = Literal["text", "thinking", "tool_call", "error", "done"]
 
 
@@ -28,18 +28,36 @@ class ChatMessage:
 
 
 @dataclass(frozen=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments_json: str
+
+
+# 新增：系统提示分层
+@dataclass
+class SystemPrompt:
+    stable: str = ""       # 可缓存：装配好的稳定系统模块
+    environment: str = ""  # 不缓存：环境信息段
+
+
+# 扩展：用量增加缓存字段
+@dataclass
+class Usage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_write: int = 0   # Anthropic: cache_creation_input_tokens; OpenAI: 0
+    cache_read: int = 0    # Anthropic: cache_read_input_tokens; OpenAI: cached_tokens
+
+
+@dataclass
 class ChatRequest:
     messages: list[ChatMessage]
     config: ProviderConfig
     tools: list[dict[str, Any]] | None = None
     tool_choice: str | None = "auto"
-
-
-@dataclass(frozen=True)
-class ToolCall:
-    id: str
-    name: str
-    arguments_json: str
+    system: SystemPrompt | None = None     # 新增：分层系统提示
+    reminder: str = ""                      # 新增：本轮 system-reminder 内容
 
 
 @dataclass(frozen=True)
@@ -47,6 +65,7 @@ class ProviderEvent:
     type: EventType
     content: str = ""
     tool_call: ToolCall | None = None
+    usage: Usage | None = None              # 新增：携带缓存用量
 
 
 class ProviderError(Exception):

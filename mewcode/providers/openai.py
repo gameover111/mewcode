@@ -14,11 +14,37 @@ class OpenAIProvider:
         self._client = client or httpx.Client(timeout=None)
 
     def stream_chat(self, request: ChatRequest) -> Iterator[ProviderEvent]:
-        payload = {
-            "model": request.config.model,
-            "stream": True,
-            "messages": [_to_openai_message(message) for message in request.messages],
-        }
+        # 构建 payload：system + messages + tools
+        payload: dict = {}
+        payload["model"] = request.config.model
+        payload["stream"] = True
+        
+        # system prompt：stable + environment 合为单条 system 消息
+        system_text = ""
+        if request.system:
+            if request.system.stable:
+                system_text = request.system.stable
+            if request.system.environment:
+                if system_text:
+                    system_text += "\n\n"
+                system_text += request.system.environment
+        if system_text:
+            payload["messages"] = [{"role": "system", "content": system_text}]
+        else:
+            payload["messages"] = []
+        
+        # 对话历史
+        for msg in request.messages:
+            payload["messages"].append(_to_openai_message(msg))
+        
+        # reminder 追加为尾部 user 消息
+        if request.reminder:
+            payload["messages"].append({"role": "user", "content": request.reminder})
+        
+        if request.tools:
+            payload["tools"] = request.tools
+            if request.tool_choice:
+                payload["tool_choice"] = request.tool_choice
         if request.tools:
             payload["tools"] = request.tools
             if request.tool_choice is not None:
@@ -67,6 +93,20 @@ class OpenAIProvider:
                 yield ProviderEvent(type="error", content=f"OpenAI API 错误：{message}")
                 continue
 
+            # 解析用量（含缓存字段）
+            usage_data = data.get("usage")
+            if usage_data:
+                prompt_details = usage_data.get("prompt_tokens_details") or {}
+                cached_tokens = 0
+                if isinstance(prompt_details, dict):
+                    cached_tokens = prompt_details.get("cached_tokens", 0) or 0
+                from mewcode.providers.base import Usage as _Usage
+                yield ProviderEvent(type="done", usage=_Usage(
+                    input_tokens=usage_data.get("prompt_tokens", 0) or 0,
+                    output_tokens=usage_data.get("completion_tokens", 0) or 0,
+                    cache_read=cached_tokens,
+                ))
+            
             for choice in data.get("choices", []):
                 for tool_delta in choice.get("delta", {}).get("tool_calls", []) or []:
                     index = int(tool_delta.get("index", 0))

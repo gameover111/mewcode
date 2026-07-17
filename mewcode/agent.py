@@ -19,14 +19,14 @@ from mewcode.providers.base import (
 )
 from mewcode.tools.base import ToolContext, ToolResult, run_tool
 from mewcode.tools.registry import ToolRegistry
-
-
-AgentEventType = Literal[
-    "user_message", "thinking", "text",
-    "tool_start", "tool_result",
-    "final", "error", "cancelled", "done",
-]
-
+from mewcode.prompts import (
+    build_system_prompt,
+    gather_environment,
+    plan_reminder,
+    should_inject_plan_reminder,
+    PLAN_REMINDER_INTERVAL,
+)
+from mewcode.providers.base import SystemPrompt
 
 @dataclass(frozen=True)
 class AgentEvent:
@@ -75,6 +75,10 @@ def tool_kind(tool_name: str) -> ToolKind:
     if tool_name in _READ_TOOLS:
         return "read"
     return "write"
+
+def _filter_read_tools(registry):
+    _READ_TOOLS = {"read_file", "find_files", "search_code"}
+    return [t for t in registry.to_openai_tools() if t["function"]["name"] in _READ_TOOLS]
 
 
 def execute_tool_calls(
@@ -180,6 +184,13 @@ def stream_agent_reply(
     ctrl = control or AgentControl()
     state = AgentRunState()
 
+    # 构建稳定系统提示（跨轮不变，走缓存）
+    _stable_prompt = build_system_prompt()
+    
+    # 采集环境信息（每轮变化，不走缓存）
+    _env = gather_environment(version="", model=config.model)
+    
+
     yield AgentEvent(type="user_message", round_index=state.round_index)
 
     while True:
@@ -203,11 +214,19 @@ def stream_agent_reply(
         round_start = time.monotonic()
         state.round_index += 1
 
+        # 计算本轮 reminder
+        _reminder = ""
+        if opts.plan_only and should_inject_plan_reminder(state.round_index):
+            _is_full = (state.round_index == 1 or (state.round_index - 1) % PLAN_REMINDER_INTERVAL == 0)
+            _reminder = plan_reminder(full=_is_full)
+        
         request = ChatRequest(
             messages=conversation.snapshot(),
             config=config,
-            tools=registry.to_openai_tools(),
+            tools=registry.to_openai_tools() if not opts.plan_only else _filter_read_tools(registry),
             tool_choice="auto",
+            system=SystemPrompt(stable=_stable_prompt, environment=_env.render()),
+            reminder=_reminder,
         )
 
         round_text_parts: list[str] = []
