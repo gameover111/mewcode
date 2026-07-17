@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from mewcode.config import load_provider_config
 from mewcode.providers.base import ProviderError
@@ -29,4 +30,4 @@ def main(argv: list[str] | None = None) -> int:
         print(f"错误：{exc}")
         return 1
 
-    return run_chat_loop(config, provider)
+    return run_chat_loop(config, provider, workspace=Path.cwd())

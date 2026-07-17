@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from mewcode.providers.base import (
     ChatRequest,
     ProviderConfig,
     ProviderError,
     ProviderEvent,
+    ToolCall,
 )
 from mewcode.tui import run_chat_loop
 
@@ -26,6 +28,26 @@ class ErrorProvider:
     def stream_chat(self, request: ChatRequest) -> Iterator[ProviderEvent]:
         raise ProviderError("模拟失败")
         yield ProviderEvent(type="done")
+
+
+class ToolProvider:
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    def stream_chat(self, request: ChatRequest) -> Iterator[ProviderEvent]:
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            yield ProviderEvent(
+                type="tool_call",
+                tool_call=ToolCall(
+                    id="call_1",
+                    name="read_file",
+                    arguments_json='{"path":"README.md"}',
+                ),
+            )
+        else:
+            yield ProviderEvent(type="text", content="读完了")
+            yield ProviderEvent(type="done")
 
 
 def make_config() -> ProviderConfig:
@@ -51,6 +73,7 @@ def run_with_inputs(inputs: list[str], provider):
         provider,
         input_func=fake_input,
         output_func=output.append,
+        workspace=Path.cwd(),
     )
     return exit_code, output
 
@@ -91,3 +114,25 @@ def test_tui_shows_provider_error_and_continues_to_exit():
     assert exit_code == 0
     assert "错误：模拟失败" in output
     assert "已退出 MewCode。" in output
+
+
+def test_tui_shows_tool_status(tmp_path):
+    (tmp_path / "README.md").write_text("hello", encoding="utf-8")
+    output: list[str] = []
+    inputs = iter(["读 README", "/exit"])
+
+    def fake_input(prompt: str) -> str:
+        output.append(prompt)
+        return next(inputs)
+
+    run_chat_loop(
+        make_config(),
+        ToolProvider(),
+        input_func=fake_input,
+        output_func=output.append,
+        workspace=tmp_path,
+    )
+
+    assert "[工具] 调用工具：read_file" in output
+    assert "[工具结果] 已读取文件：README.md" in output
+    assert "读完了" in output

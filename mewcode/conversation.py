@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from mewcode.providers.base import ChatMessage
+from mewcode.providers.base import ChatMessage, ToolCall
 
 
 @dataclass
@@ -14,6 +14,16 @@ class Conversation:
 
     def add_assistant_message(self, content: str) -> None:
         self.messages.append(ChatMessage(role="assistant", content=content))
+
+    def add_assistant_tool_call(self, tool_call: ToolCall) -> None:
+        self.messages.append(
+            ChatMessage(role="assistant", content="", tool_calls=[tool_call])
+        )
+
+    def add_tool_result(self, tool_call_id: str, content: str) -> None:
+        self.messages.append(
+            ChatMessage(role="tool", content=content, tool_call_id=tool_call_id)
+        )
 
     def snapshot(self) -> list[ChatMessage]:
         return list(self.messages)
