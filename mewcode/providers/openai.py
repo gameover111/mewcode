@@ -36,6 +36,8 @@ class OpenAIProvider:
                 headers=headers,
                 json=payload,
             ) as response:
+                if response.is_error:
+                    response.read()
                 response.raise_for_status()
                 yield from self._iter_events(response)
         except httpx.HTTPStatusError as exc:

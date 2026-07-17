@@ -61,3 +61,14 @@ def test_openai_provider_turns_http_error_into_provider_error():
 
     with pytest.raises(ProviderError, match="OpenAI API 请求失败"):
         list(provider.stream_chat(make_request()))
+
+
+def test_openai_provider_reads_streaming_error_body():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, content='{"error":{"message":"bad tool result"}}')
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAIProvider(client=client)
+
+    with pytest.raises(ProviderError, match="bad tool result"):
+        list(provider.stream_chat(make_request()))
