@@ -40,7 +40,10 @@ class OpenAIProvider:
                 yield from self._iter_events(response)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
-            raise ProviderError(f"OpenAI API 请求失败，HTTP 状态码：{status_code}") from exc
+            detail = _response_error_detail(exc.response)
+            raise ProviderError(
+                f"OpenAI API 请求失败，HTTP 状态码：{status_code}，响应：{detail}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"OpenAI API 网络请求失败：{exc}") from exc
 
@@ -90,6 +93,7 @@ def _to_openai_message(message: ChatMessage) -> dict:
     if message.tool_call_id:
         data["tool_call_id"] = message.tool_call_id
     if message.tool_calls:
+        data["content"] = None
         data["tool_calls"] = [
             {
                 "id": tool_call.id,
@@ -102,6 +106,17 @@ def _to_openai_message(message: ChatMessage) -> dict:
             for tool_call in message.tool_calls
         ]
     return data
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    text = response.text.strip()
+    if not text:
+        return "无响应内容"
+    try:
+        data = response.json()
+    except ValueError:
+        return text[:1000]
+    return json.dumps(data, ensure_ascii=False)[:1000]
 
 
 def _flush_tool_calls(tool_call_parts: dict[int, dict[str, str]]) -> Iterator[ProviderEvent]:

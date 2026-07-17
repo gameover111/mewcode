@@ -59,6 +59,7 @@ def test_openai_provider_sends_tools_and_tool_messages():
 
     assert captured["json"]["tools"][0]["function"]["name"] == "read_file"
     assert captured["json"]["tool_choice"] == "auto"
+    assert captured["json"]["messages"][1]["content"] is None
     assert captured["json"]["messages"][1]["tool_calls"][0]["id"] == "call_1"
     assert captured["json"]["messages"][2]["role"] == "tool"
     assert captured["json"]["messages"][2]["tool_call_id"] == "call_1"
