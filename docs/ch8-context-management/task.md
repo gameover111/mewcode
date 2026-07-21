@@ -14,18 +14,16 @@
 | mewcode/compact/layer2.py | 新建 | auto_compact / force_compact / run_summary / summarize_once / ptl_retry / pick_recent_tail / group_by_user_turn |
 | mewcode/compact/compact.py | 新建 | manage_context / TriggerKind 枚举 / 编排 |
 | mewcode/conversation.py | 修改 | 新增 replace_history(new_messages) 深拷贝整体替换 |
-| mewcode/config/config.py | 修改 | ProviderConfig 追加 context_window: int = 0 |
-| mewcode/config/protocol_defaults.py | 新建 | DEFAULT_ANTHROPIC_CONTEXT_WINDOW / DEFAULT_OPENAI_CONTEXT_WINDOW |
-| mewcode/agent/runtime.py | 新建 | SessionRuntime dataclass |
-| mewcode/agent/event.py | 新建 | CompactPhase / CompactEvent；Event 追加 compact 字段 |
-| mewcode/agent/agent.py | 修改 | __init__ 接受 runtime；主循环集成 compact、ReadFile 追踪、PTL 紧急压缩、run_force_compact、_run_lock 互斥锁 |
-| mewcode/llm/__init__.py | 修改 | 新增 class PromptTooLongError(Exception) 哨兵异常 |
-| mewcode/llm/anthropic_provider.py | 修改 | 把 provider 上下文过长异常包装成 PromptTooLongError |
-| mewcode/llm/openai_provider.py | 修改 | 同上 |
-| mewcode/tui/commands.py | 新建 | 命令分发 + /exit /plan /do /compact 处理器 + 未知命令兜底 |
-| mewcode/tui/app.py | 修改 | 新增 runtime: SessionRuntime 字段 |
+| mewcode/config.py | 修改 | ProviderConfig 追加 context_window: int = 0；追加协议默认值 |
+| mewcode/compact/state.py | 新建 | SessionRuntime dataclass（compact 子包内） |
+| mewcode/compact/compact.py | 新建 | TriggerKind / CompressionResult / CompactEvent |
+| mewcode/agent.py | 修改 | 主循环集成 compact、ReadFile 追踪、PTL 紧急压缩、run_force_compact、_run_lock 互斥锁 |
+| mewcode/providers/__init__.py | 修改 | 新增 class PromptTooLongError(Exception) 哨兵异常 |
+| mewcode/providers/anthropic.py | 修改 | 把 provider 上下文过长异常包装成 PromptTooLongError |
+| mewcode/providers/openai.py | 修改 | 同上 |
+| mewcode/tui.py | 修改 | BUILTIN_COMMANDS 命令分发 + /exit /plan /do /compact + SessionRuntime 字段 |
 | mewcode/cli.py | 修改 | 启动期构造 SessionRuntime 注入 TUI |
-| .mewcode/config.yaml.example | 修改 | 新增 context_window 字段示例 |
+| .mewcode/settings.yaml.example | 修改 | 新增 context_window 字段示例 |
 | .gitignore | 修改 | 追加 .mewcode/sessions/ |
 
 ## T1 - 建立 compact 子包骨架与常量
@@ -130,8 +128,28 @@
 
 ## T11 - 集成改动
 
-文件：mewcode/conversation.py、mewcode/config/config.py、mewcode/config/protocol_defaults.py、
-      mewcode/agent/runtime.py、mewcode/agent/event.py、mewcode/agent/agent.py、
-      mewcode/llm/__init__.py、mewcode/llm/anthropic_provider.py、mewcode/llm/openai_provider.py、
-      mewcode/tui/commands.py、mewcode/cli.py
+文件：mewcode/conversation.py、mewcode/config.py、mewcode/agent.py、
+      mewcode/providers/__init__.py、mewcode/providers/anthropic.py、mewcode/providers/openai.py、
+      mewcode/tui.py、mewcode/cli.py、.gitignore
 步骤：按 spec 和 plan 实现各模块集成
+
+### T11a - Provider 层
+- mewcode/providers/__init__.py：新增 PromptTooLongError(Exception) 哨兵异常
+- mewcode/providers/anthropic.py：捕获 overloaded_error → 包装为 PromptTooLongError
+- mewcode/providers/openai.py：捕获 context_length_exceeded → 包装为 PromptTooLongError
+- mewcode/providers/base.py：StreamEvent 增加 usage 字段
+
+### T11b - Config 层
+- mewcode/config.py：ProviderConfig 新增 context_window: int = 0；effective_context_window() 函数
+
+### T11c - Conversation 层
+- mewcode/conversation.py：新增 replace_history(new_messages) 深拷贝整体替换
+
+### T11d - Agent 层
+- mewcode/agent.py：主循环每轮前调用 manage_context；ReadFile 成功后调 RecoveryState.record_file；
+  捕获 PromptTooLongError 后调 force_compact 重试一次；新增 run_force_compact 方法；新增 _run_lock
+
+### T11e - TUI + CLI 层
+- mewcode/tui.py：BUILTIN_COMMANDS 命令注册表 + /compact 处理器；SessionRuntime 字段
+- mewcode/cli.py：启动期构造 SessionRuntime 注入 TUI
+- .gitignore：追加 .mewcode/sessions/

@@ -17,6 +17,13 @@ from mewcode.providers.base import (
     ProviderEvent,
     ToolCall,
 )
+from mewcode.providers import PromptTooLongError
+from mewcode.compact import (
+    SessionRuntime,
+    TriggerKind,
+    manage_context,
+    run_force_compact,
+)
 from mewcode.permissions import PermissionMode, PermissionRequest, parse_permission_mode
 from mewcode.tools.base import ToolContext, ToolResult, run_tool
 from mewcode.tools.registry import ToolRegistry
@@ -35,6 +42,7 @@ AgentEventType = Literal[
     "text",
     "tool_start",
     "tool_result",
+    "context_compact",
     "final",
     "error",
     "cancelled",
@@ -321,6 +329,24 @@ def _exec_one_checked_v2(
     return result
 
 
+def _compact_event(result, round_index) -> AgentEvent | None:
+    """如果压缩发生了，返回 context_compact 事件；否则返回 None。"""
+    if not (result.layer1_applied or result.layer2_applied or result.breaker_tripped):
+        return None
+    info_parts = []
+    if result.layer1_applied:
+        info_parts.append("Layer 1: 工具结果落盘")
+    if result.layer2_applied:
+        info_parts.append("Layer 2: 摘要压缩")
+    if result.breaker_tripped:
+        info_parts.append(f"熔断器跳闸 ({result.estimated_tokens:,}t)")
+    return AgentEvent(
+        type="context_compact",
+        content=f"{' / '.join(info_parts)}  — 约 {result.estimated_tokens:,} token",
+        round_index=round_index,
+    )
+
+
 def _tool_result_to_json(result: ToolResult) -> str:
     return json.dumps(
         {"ok": result.ok, "summary": result.summary, "data": result.data, "error": result.error},
@@ -337,6 +363,7 @@ def stream_agent_reply(
     options: AgentOptions | None = None,
     control: AgentControl | None = None,
     hooks: ToolExecutionHooks | None = None,
+    runtime: SessionRuntime | None = None,
 ) -> Iterator[AgentEvent]:
     opts = options or AgentOptions()
     ctrl = control or AgentControl()
@@ -374,54 +401,93 @@ def stream_agent_reply(
         round_start = time.monotonic()
         state.round_index += 1
 
+        # 预计算工具定义（恢复段与 stream 请求共用同一份引用，F17）
+        tool_defs = registry.to_openai_tools() if not effective_plan_only else _filter_read_tools(registry)
+
         # 计算本轮 reminder
         _reminder = ""
         if effective_plan_only and should_inject_plan_reminder(state.round_index):
             _is_full = (state.round_index == 1 or (state.round_index - 1) % PLAN_REMINDER_INTERVAL == 0)
             _reminder = plan_reminder(full=_is_full)
-        
-        request = ChatRequest(
-            messages=conversation.snapshot(),
-            config=config,
-            tools=registry.to_openai_tools() if not effective_plan_only else _filter_read_tools(registry),
-            tool_choice="auto",
-            system=SystemPrompt(stable=_stable_prompt, environment=_env.render()),
-            reminder=_reminder,
-        )
 
         round_text_parts: list[str] = []
         round_tool_calls: list[ToolCall] = []
 
-        try:
-            for event in provider.stream_chat(request):
-                if opts.per_round_timeout_seconds is not None:
-                    if time.monotonic() - round_start > opts.per_round_timeout_seconds:
-                        yield AgentEvent(type="error", content=f"第 {state.round_index} 轮超时：已超过 {opts.per_round_timeout_seconds} 秒", round_index=state.round_index)
+        # PTL 重试循环（F25/F26）：最多重试一次
+        _ptl_retried = False
+        while True:
+            # ---- ch8 上下文压缩（每轮请求前） ----
+            if runtime is not None:
+                cr = manage_context(
+                    conversation, runtime,
+                    provider=provider, config=config, tool_defs=tool_defs,
+                    trigger=TriggerKind.AUTO,
+                )
+                ev = _compact_event(cr, state.round_index)
+                if ev:
+                    yield ev
+
+            request = ChatRequest(
+                messages=conversation.snapshot(),
+                config=config,
+                tools=tool_defs,
+                tool_choice="auto",
+                system=SystemPrompt(stable=_stable_prompt, environment=_env.render()),
+                reminder=_reminder,
+            )
+
+            round_text_parts.clear()
+            round_tool_calls.clear()
+
+            try:
+                for event in provider.stream_chat(request):
+                    if opts.per_round_timeout_seconds is not None:
+                        if time.monotonic() - round_start > opts.per_round_timeout_seconds:
+                            yield AgentEvent(type="error", content=f"第 {state.round_index} 轮超时：已超过 {opts.per_round_timeout_seconds} 秒", round_index=state.round_index)
+                            break
+
+                    if opts.overall_timeout_seconds is not None:
+                        if time.monotonic() - state.started_at > opts.overall_timeout_seconds:
+                            yield AgentEvent(type="error", content=f"整体超时：已超过 {opts.overall_timeout_seconds} 秒", round_index=state.round_index)
+                            break
+                    if ctrl.cancelled:
                         break
 
-                if opts.overall_timeout_seconds is not None:
-                    if time.monotonic() - state.started_at > opts.overall_timeout_seconds:
-                        yield AgentEvent(type="error", content=f"整体超时：已超过 {opts.overall_timeout_seconds} 秒", round_index=state.round_index)
+                    if event.type == "text":
+                        round_text_parts.append(event.content)
+                        yield AgentEvent(type="text", content=event.content, round_index=state.round_index)
+                    elif event.type == "thinking":
+                        yield AgentEvent(type="thinking", content=event.content, round_index=state.round_index)
+                    elif event.type == "tool_call" and event.tool_call:
+                        round_tool_calls.append(event.tool_call)
+                        yield AgentEvent(type="tool_start", content=f"调用工具：{event.tool_call.name}", round_index=state.round_index, tool_call_id=event.tool_call.id, tool_name=event.tool_call.name)
+                    elif event.type == "error":
+                        yield AgentEvent(type="error", content=event.content, round_index=state.round_index)
+                    elif event.type == "done":
                         break
-                if ctrl.cancelled:
-                    break
+                break  # 流式接收成功，退出 PTL 重试循环
 
-                if event.type == "text":
-                    round_text_parts.append(event.content)
-                    yield AgentEvent(type="text", content=event.content, round_index=state.round_index)
-                elif event.type == "thinking":
-                    yield AgentEvent(type="thinking", content=event.content, round_index=state.round_index)
-                elif event.type == "tool_call" and event.tool_call:
-                    round_tool_calls.append(event.tool_call)
-                    yield AgentEvent(type="tool_start", content=f"调用工具：{event.tool_call.name}", round_index=state.round_index, tool_call_id=event.tool_call.id, tool_name=event.tool_call.name)
-                elif event.type == "error":
-                    yield AgentEvent(type="error", content=event.content, round_index=state.round_index)
-                elif event.type == "done":
-                    break
-        except ProviderError as exc:
-            yield AgentEvent(type="error", content=str(exc), round_index=state.round_index)
-            yield AgentEvent(type="done", round_index=state.round_index)
-            return
+            except PromptTooLongError:
+                if _ptl_retried:
+                    raise ProviderError("上下文过长，紧急压缩重试后仍失败") from None
+                _ptl_retried = True
+                if runtime is not None:
+                    emergency_result = manage_context(
+                        conversation, runtime,
+                        provider=provider, config=config, tool_defs=tool_defs,
+                        trigger=TriggerKind.EMERGENCY,
+                    )
+                    ev = _compact_event(emergency_result, state.round_index)
+                    if ev:
+                        yield ev
+                    if not emergency_result.layer2_applied:
+                        raise ProviderError("上下文过长且紧急压缩失败，无法继续")
+                continue
+
+            except ProviderError as exc:
+                yield AgentEvent(type="error", content=str(exc), round_index=state.round_index)
+                yield AgentEvent(type="done", round_index=state.round_index)
+                return
 
         if ctrl.cancelled:
             yield AgentEvent(type="cancelled", content="用户取消了操作", round_index=state.round_index)
@@ -450,6 +516,13 @@ def stream_agent_reply(
         )
 
         for tc, tr in tool_results:
+            # ch8 F19：追踪 read_file 成功结果用于恢复段
+            if runtime is not None and tc.name == "read_file" and tr.ok:
+                path = (tr.data or {}).get("path", "")
+                content = (tr.data or {}).get("content", "")
+                if path and content:
+                    runtime.recovery.record_file(path, content)
+
             result_json = _tool_result_to_json(tr)
             conversation.add_tool_result(tc.id, result_json)
             yield AgentEvent(

@@ -11,6 +11,23 @@ from mewcode.providers.base import ProviderConfig, ProviderError
 REQUIRED_FIELDS = ("name", "protocol", "model", "base_url", "api_key")
 SUPPORTED_PROTOCOLS = ("anthropic", "openai")
 
+# F31：协议默认上下文窗口
+_DEFAULT_CONTEXT_WINDOWS: dict[str, int] = {
+    "anthropic": 200_000,
+    "openai": 128_000,
+}
+
+
+def effective_context_window(config: ProviderConfig) -> int:
+    """返回 provider 的有效上下文窗口大小（F31）。
+
+    如果配置了 context_window（非零），使用配置值；
+    否则按协议返回默认值。
+    """
+    if config.context_window > 0:
+        return config.context_window
+    return _DEFAULT_CONTEXT_WINDOWS.get(config.protocol, 128_000)
+
 
 def load_provider_config(path: str | Path) -> ProviderConfig:
     config_path = Path(path)
@@ -43,6 +60,7 @@ def load_provider_config(path: str | Path) -> ProviderConfig:
         base_url=str(raw["base_url"]),
         api_key=str(raw["api_key"]),
         thinking=_to_bool(raw.get("thinking", False)),
+        context_window=int(raw.get("context_window", 0) or 0),
     )
 
 

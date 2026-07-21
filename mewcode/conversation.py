@@ -31,3 +31,8 @@ class Conversation:
 
     def snapshot(self) -> list[ChatMessage]:
         return list(self.messages)
+
+    def replace_history(self, new_messages: list[ChatMessage]) -> None:
+        """深拷贝替换整个对话历史（F15）。"""
+        import copy
+        self.messages = copy.deepcopy(new_messages)

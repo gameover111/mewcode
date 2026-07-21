@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 import httpx
 
+from mewcode.providers import PromptTooLongError
 from mewcode.providers.base import ChatMessage, ChatRequest, ProviderError, ProviderEvent, ToolCall, Usage
 from mewcode.providers.sse import iter_sse_data_lines
 
@@ -69,6 +70,10 @@ class OpenAIProvider:
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             detail = _response_error_detail(exc.response)
+            if _is_prompt_too_long(status_code, detail):
+                raise PromptTooLongError(
+                    f"OpenAI API 上下文过长：{detail}"
+                ) from exc
             raise ProviderError(
                 f"OpenAI API 请求失败，HTTP 状态码：{status_code}，响应：{detail}"
             ) from exc
@@ -159,6 +164,32 @@ def _response_error_detail(response: httpx.Response) -> str:
     except ValueError:
         return text[:1000]
     return json.dumps(data, ensure_ascii=False)[:1000]
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    text = response.text.strip()
+    if not text:
+        return "无响应内容"
+    try:
+        data = response.json()
+    except ValueError:
+        return text[:1000]
+    return json.dumps(data, ensure_ascii=False)[:1000]
+
+
+def _is_prompt_too_long(status_code: int, error_text: str) -> bool:
+    if status_code not in (400, 413):
+        return False
+    keywords = [
+        "context_length_exceeded",
+        "prompt_too_long",
+        "maximum context",
+        "too long",
+        "reduce the length",
+        "token",
+    ]
+    lower = error_text.lower()
+    return any(kw in lower for kw in keywords)
 
 
 def _flush_tool_calls(tool_call_parts: dict[int, dict[str, str]]) -> Iterator[ProviderEvent]:

@@ -5,6 +5,7 @@ from collections.abc import Iterator
 
 import httpx
 
+from mewcode.providers import PromptTooLongError
 from mewcode.providers.base import ChatRequest, ProviderError, ProviderEvent
 from mewcode.providers.sse import iter_sse_data_lines
 
@@ -37,6 +38,9 @@ class ClaudeProvider:
                 yield from self._iter_events(response)
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
+            error_text = _response_error_detail(exc.response)
+            if _is_prompt_too_long(status_code, error_text):
+                raise PromptTooLongError(f"Claude API 上下文过长：{error_text}") from exc
             raise ProviderError(f"Claude API 请求失败，HTTP 状态码：{status_code}") from exc
         except httpx.HTTPError as exc:
             raise ProviderError(f"Claude API 网络请求失败：{exc}") from exc
@@ -81,3 +85,22 @@ class ClaudeProvider:
             elif event_type == "message_stop":
                 yield ProviderEvent(type="done")
                 return
+
+
+def _response_error_detail(response: httpx.Response) -> str:
+    text = response.text.strip()
+    if not text:
+        return "无响应内容"
+    try:
+        data = response.json()
+    except ValueError:
+        return text[:1000]
+    return json.dumps(data, ensure_ascii=False)[:1000]
+
+
+def _is_prompt_too_long(status_code: int, error_text: str) -> bool:
+    if status_code not in (400, 413):
+        return False
+    keywords = ["prompt_too_long", "too long", "context", "token", "length"]
+    lower = error_text.lower()
+    return any(kw in lower for kw in keywords)

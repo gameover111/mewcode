@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 from mewcode.agent import AgentOptions
-from mewcode.config import load_provider_config
+from mewcode.compact import SessionRuntime, new_session_context
+from mewcode.config import effective_context_window, load_provider_config
 from mewcode.mcp import load_config as load_mcp_config
 from mewcode.mcp import new_manager
 from mewcode.providers.base import ProviderError
@@ -69,6 +70,14 @@ def main(argv: list[str] | None = None) -> int:
 
     workspace = Path.cwd()
     registry = create_default_registry()
+
+    # ch8：创建跨轮复用的 SessionRuntime
+    session_ctx = new_session_context(str(workspace))
+    runtime = SessionRuntime(
+        session=session_ctx,
+        context_window=effective_context_window(config),
+    )
+
     manager = asyncio.run(new_manager(load_mcp_config(str(workspace)), version="0.1.0"))
     try:
         registered = 0
@@ -81,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         if registered:
             print(f"已注册 MCP 工具：{registered} 个")
 
-        return run_chat_loop(config, provider, registry=registry, workspace=workspace, options=options)
+        return run_chat_loop(config, provider, registry=registry, workspace=workspace, options=options, runtime=runtime)
     finally:
         asyncio.run(manager.close())
 

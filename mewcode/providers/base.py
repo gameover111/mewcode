@@ -17,6 +17,7 @@ class ProviderConfig:
     base_url: str
     api_key: str
     thinking: bool = False
+    context_window: int = 0  # 0 表示未配置，走协议默认值（F30/F31）
 
 
 @dataclass(frozen=True)

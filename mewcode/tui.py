@@ -7,6 +7,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 from mewcode.agent import AgentControl, AgentOptions, stream_agent_reply
+from mewcode.compact import (
+    SessionRuntime,
+    estimate_tokens,
+    run_force_compact,
+)
 from mewcode.conversation import Conversation
 from mewcode.permissions import (
     PermissionManager,
@@ -102,7 +107,7 @@ def _stop_spinner(ou, tid: str) -> None:
 _tool_starts: dict[str, float] = {}
 _tid_for_tool: dict[str, str] = {}
 
-def run_chat_loop(config, provider, input_func=input, output_func=print, registry=None, workspace=None, options=None):
+def run_chat_loop(config, provider, input_func=input, output_func=print, registry=None, workspace=None, options=None, runtime=None):
     global _tool_starts
     conv = Conversation()
     reg = registry or create_default_registry()
@@ -110,7 +115,55 @@ def run_chat_loop(config, provider, input_func=input, output_func=print, registr
     opts = options or AgentOptions()
     pm = PermissionManager.from_files(wd, callback=_ask(input_func, output_func), mode_override=opts.permission_mode)
     ctx = ToolContext(workspace=wd, permission_manager=pm)
+    rt = runtime  # SessionRuntime，跨轮保持
     _banner(output_func, config, reg, pm, provider)
+
+    # F21：统一命令注册表（以 / 开头走命令路径，不发给 LLM）
+    def _cmd_exit():
+        return "exit"
+
+    def _cmd_mode():
+        nonlocal opts
+        pm.mode = next_permission_mode(pm.mode)
+        opts = _wm(opts, pm.mode)
+        mk = _ms(pm.mode.value)
+        _wl(output_func, MODE_COLORS.get(mk, "") + " " + mk.upper())
+
+    def _cmd_plan():
+        nonlocal opts
+        pm.mode = PermissionMode.PLAN
+        opts = _wm(opts, pm.mode)
+        _wl(output_func, YW + " plan")
+
+    def _cmd_do():
+        nonlocal opts
+        pm.mode = PermissionMode.DEFAULT
+        opts = _wm(opts, pm.mode)
+        _wl(output_func, BL + " 开始执行")
+        return "请根据上文计划开始执行。"
+
+    def _cmd_compact():
+        # F22/F24：手动压缩，跳过阈值检查，无条件触发摘要
+        if rt is None:
+            _wl(output_func, RD + " 会话运行时未初始化，无法压缩" + R)
+            return None
+        tool_defs = reg.to_openai_tools()
+        before = estimate_tokens(conv.snapshot(), rt.usage_anchor, rt.anchor_msg_len)
+        _wl(output_func, CY + " 正在压缩上下文..." + R)
+        with rt._run_lock:
+            after_before = run_force_compact(conv, rt, provider, config, tool_defs)
+        before_t, after_t = after_before
+        _wl(output_func, GN + f" 已压缩，token 从 {before_t:,} 降至 {after_t:,}" + R)
+        return None
+
+    BUILTIN_COMMANDS = {
+        "/exit": _cmd_exit,
+        "/quit": _cmd_exit,
+        "/mode": _cmd_mode,
+        "/plan": _cmd_plan,
+        "/do": _cmd_do,
+        "/compact": _cmd_compact,
+    }
 
     while True:
         mode_key = _ms(pm.mode.value)
@@ -120,69 +173,79 @@ def run_chat_loop(config, provider, input_func=input, output_func=print, registr
         except (EOFError, KeyboardInterrupt):
             _wl(output_func, mc + " 再见")
             return 0
-        if not inp: continue
-        if inp in ("/exit", "/quit"):
-            _wl(output_func, mc + " 再见")
-            return 0
-        if inp == "/mode":
-            pm.mode = next_permission_mode(pm.mode)
-            opts = _wm(opts, pm.mode)
-            mk = _ms(pm.mode.value)
-            _wl(output_func, MODE_COLORS.get(mk, "") + " " + mk.upper())
+        if not inp:
             continue
-        if inp == "/plan":
-            pm.mode = PermissionMode.PLAN
-            opts = _wm(opts, pm.mode)
-            _wl(output_func, YW + " plan")
-            continue
-        if inp == "/do":
-            pm.mode = PermissionMode.DEFAULT
-            opts = _wm(opts, pm.mode)
-            inp = "请根据上文计划开始执行。"
-            _wl(output_func, BL + " 开始执行")
+
+        # F21：斜杠命令分发
+        if inp.startswith("/"):
+            cmd = inp.split(maxsplit=1)[0]  # 提取命令名
+            handler = BUILTIN_COMMANDS.get(cmd)
+            if handler is not None:
+                result = handler()
+                if result == "exit":
+                    _wl(output_func, mc + " 再见")
+                    return 0
+                # /do 返回替代输入文本
+                if isinstance(result, str):
+                    inp = result
+                else:
+                    continue
+            else:
+                _wl(output_func, RD + f" 未知命令：{cmd}，可用命令：{' '.join(BUILTIN_COMMANDS)}" + R)
+                continue
 
         conv.add_user_message(inp)
         ctrl = AgentControl()
         _tool_starts.clear()
         _shown_prefix = False
 
-        for ev in stream_agent_reply(conv, config, provider, reg, ctx, options=opts, control=ctrl):
-            if ev.type == "text":
-                if not _shown_prefix:
-                    _wl(output_func, CY + chr(0x250c) + " MewCode " + chr(0x2500) + " " + R)
-                    _shown_prefix = True
-                _w(output_func, ev.content)
+        # F35：持有 run_lock 期间执行 Agent 循环
+        if rt is not None:
+            rt._run_lock.acquire()
+        try:
+            for ev in stream_agent_reply(conv, config, provider, reg, ctx, options=opts, control=ctrl, runtime=rt):
+                if ev.type == "text":
+                    if not _shown_prefix:
+                        _wl(output_func, CY + chr(0x250c) + " MewCode " + chr(0x2500) + " " + R)
+                        _shown_prefix = True
+                    _w(output_func, ev.content)
 
-            elif ev.type == "thinking":
-                _wl(output_func, GY + " " + D + ev.content + R)
+                elif ev.type == "thinking":
+                    _wl(output_func, GY + " " + D + ev.content + R)
 
-            elif ev.type == "tool_start":
-                tid = ev.tool_call_id or ""
-                _tool_starts[tid] = time.monotonic()
-                _tid_for_tool[ev.tool_name or ""] = tid
-                _start_spinner(output_func, ev.tool_name or "", tid)
+                elif ev.type == "context_compact":
+                    _wl(output_func, D + " " + D + "压缩" + R + D + " " + ev.content + R)
 
-            elif ev.type == "tool_result":
-                tid = ev.tool_call_id or ""
-                t0 = _tool_starts.pop(tid, None)
-                elapsed = time.monotonic() - t0 if t0 else 0.0
-                _stop_spinner(output_func, tid)
-                _tid_for_tool.pop(ev.tool_name or "", None)
-                summary = _shorten(ev.content or "", 60)
-                is_err = any(kw in (ev.content or "") for kw in ["失败", "错误", "拒绝", "拦截", "超时"])
-                result_color = RD if is_err else GN
-                indent = "  " if _shown_prefix else ""
-                _wl(output_func, indent + GY + chr(0x2514) + R + " " + result_color + "结果" + R + GY + " " + summary + R)
-                _wl(output_func, indent + "  " + GY + chr(0x23f1) + " " + format(elapsed, ".1f") + "s" + R)
+                elif ev.type == "tool_start":
+                    tid = ev.tool_call_id or ""
+                    _tool_starts[tid] = time.monotonic()
+                    _tid_for_tool[ev.tool_name or ""] = tid
+                    _start_spinner(output_func, ev.tool_name or "", tid)
 
-            elif ev.type == "error":
-                _wl(output_func, RD + " " + RD + "错误" + R + " " + ev.content)
+                elif ev.type == "tool_result":
+                    tid = ev.tool_call_id or ""
+                    t0 = _tool_starts.pop(tid, None)
+                    elapsed = time.monotonic() - t0 if t0 else 0.0
+                    _stop_spinner(output_func, tid)
+                    _tid_for_tool.pop(ev.tool_name or "", None)
+                    summary = _shorten(ev.content or "", 60)
+                    is_err = any(kw in (ev.content or "") for kw in ["失败", "错误", "拒绝", "拦截", "超时"])
+                    result_color = RD if is_err else GN
+                    indent = "  " if _shown_prefix else ""
+                    _wl(output_func, indent + GY + chr(0x2514) + R + " " + result_color + "结果" + R + GY + " " + summary + R)
+                    _wl(output_func, indent + "  " + GY + chr(0x23f1) + " " + format(elapsed, ".1f") + "s" + R)
 
-            elif ev.type == "cancelled":
-                _wl(output_func, YW + " " + YW + "已取消" + R)
+                elif ev.type == "error":
+                    _wl(output_func, RD + " " + RD + "错误" + R + " " + ev.content)
 
-            elif ev.type == "done":
-                break
+                elif ev.type == "cancelled":
+                    _wl(output_func, YW + " " + YW + "已取消" + R)
+
+                elif ev.type == "done":
+                    break
+        finally:
+            if rt is not None:
+                rt._run_lock.release()
 
         output_func("")
 
@@ -208,7 +271,7 @@ def _banner(ou, config, reg, pm, provider):
     lines = [provider_line, tool_line, mode_line]
     if servers:
         lines.append("MCP      " + ", ".join(servers))
-    lines.append("帮助    /exit /mode /plan /do")
+    lines.append("帮助    /exit /mode /plan /do /compact")
     _wl(ou, _CAT)
     _wl(ou, _box(lines, color=mc))
 

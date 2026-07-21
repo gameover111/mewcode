@@ -14,3 +14,6 @@ tmp.e2e.*.yaml
 .mewcode/settings.local.yaml
 
 gitflow_doc/
+
+# ch8 上下文管理：工具结果落盘目录
+.mewcode/sessions/
