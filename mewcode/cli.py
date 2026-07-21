@@ -1,12 +1,14 @@
 ﻿from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
 
 from mewcode.agent import AgentOptions
 from mewcode.config import load_provider_config
-from mewcode.mcp import load_mcp_server_configs, register_mcp_tools
+from mewcode.mcp import load_config as load_mcp_config
+from mewcode.mcp import new_manager
 from mewcode.providers.base import ProviderError
 from mewcode.providers.factory import create_provider
 from mewcode.tui import run_chat_loop
@@ -67,12 +69,21 @@ def main(argv: list[str] | None = None) -> int:
 
     workspace = Path.cwd()
     registry = create_default_registry()
-    mcp_configs = load_mcp_server_configs(workspace, args.config)
-    registered = register_mcp_tools(registry, mcp_configs)
-    if registered:
-        print(f"已注册 MCP 工具：{len(registered)} 个")
+    manager = asyncio.run(new_manager(load_mcp_config(str(workspace)), version="0.1.0"))
+    try:
+        registered = 0
+        for tool in manager.tools():
+            try:
+                registry.register(tool)
+                registered += 1
+            except Exception as exc:
+                print(f"[mcp] warn: register tool {tool.name} failed: {exc}", file=sys.stderr)
+        if registered:
+            print(f"已注册 MCP 工具：{registered} 个")
 
-    return run_chat_loop(config, provider, registry=registry, workspace=workspace, options=options)
+        return run_chat_loop(config, provider, registry=registry, workspace=workspace, options=options)
+    finally:
+        asyncio.run(manager.close())
 
 
 def _configure_stdio() -> None:

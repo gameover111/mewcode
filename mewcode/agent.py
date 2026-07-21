@@ -211,6 +211,7 @@ def _exec_one_checked(
             hooks.after_tool(tc, result)
         return result
 
+    tool = registry.get(tc.name)
     permission_manager = getattr(context, "permission_manager", None)
     if permission_manager is not None:
         decision = permission_manager.check(
@@ -218,6 +219,7 @@ def _exec_one_checked(
                 tool_name=tc.name,
                 arguments=arguments,
                 workspace=context.workspace,
+                read_only=bool(getattr(tool, "read_only", False)) if tool is not None else False,
             )
         )
         if not decision.allowed:

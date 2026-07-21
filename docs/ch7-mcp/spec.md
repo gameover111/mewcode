@@ -1,74 +1,70 @@
-# MewCode ch7 MCP 客户端 Spec
+﻿# MewCode ch7 MCP 客户端 Spec
 
 ## 背景
 
-ch6 后 MewCode 已经有内置工具和权限系统。ch7 要让 MewCode 能在启动时发现外部 MCP Server 提供的工具，并把它们包装成 MewCode 现有 `Tool` 接口注册进工具中心。Agent 调用时不需要知道工具来自本地还是 MCP。
+ch6 完成后 MewCode 已有内置工具、权限系统和提示词工程化。ch7 要让 MewCode 在启动时自动发现外部 MCP Server 提供的工具，通过标准 MCP 协议注册到工具中心，Agent 调用时完全无感。
 
 ## 目标
 
-- 支持 MCP stdio 本地子进程传输。
-- 支持 MCP Streamable HTTP 远程传输。
-- 使用 JSON-RPC 2.0 消息格式，按请求 id 配对响应。
-- 会话流程包含 initialize、notifications/initialized、tools/list、tools/call。
-- MCP 工具通过适配器接入 `ToolRegistry`。
-- 多个 Server 独立连接和注册；单个 Server 失败不影响其他 Server。
-- 从用户级、项目级配置合并 Server 列表，项目级覆盖用户级。
+- 使用官方 `mcp` Python SDK，不自研 JSON-RPC 协议栈
+- 支持 stdio（本地子进程）和 Streamable HTTP（远程）两种传输
+- MCP 工具统一命名为 `mcp__<server>__<tool>` 避免冲突
+- 启动时并行连接多个 Server，单 Server 失败不影响其他
+- 配置从用户级和项目级两层读取合并
+- Agent/TUI 层无感知，通过统一 Tool 接口调用
 
 ## 配置格式
 
-推荐写在项目 `mewcode.yaml` 或用户级 `~/.mewcode/settings.yaml`：
-
-```yaml
-mcp:
-  servers:
-    local_demo:
-      transport: stdio
-      command: python
-      args: ["examples/mcp_server.py"]
-      env:
-        DEMO_TOKEN: ${DEMO_TOKEN}
-
-    remote_demo:
-      transport: http
-      url: https://example.com/mcp
-      headers:
-        Authorization: Bearer ${MCP_TOKEN}
-```
-
-兼容简写：
+用户级：`~/.mewcode/config.yaml`
+项目级：`<root>/.mewcode.yaml`
 
 ```yaml
 mcp_servers:
-  local_demo:
-    command: python
-    args: ["server.py"]
+  github:
+    type: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+  example-http:
+    type: http
+    url: "https://mcp.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${EXAMPLE_TOKEN}"
 ```
+
+说明：
+- 顶层键为 `mcp_servers`，值是一个 map，key 是 Server 名称
+- `type` 必须显式指定，支持 `stdio` 或 `http`
+- stdio 必须提供 `command`；args 和 env 可选
+- http 必须提供 `url`；headers 可选
+- env 和 headers 的值支持 `${VAR}` 环境变量展开，command/args/工具名不做展开
+- 项目级同名 Server 完整覆盖用户级
 
 ## 功能需求
 
-- F1: 解析用户级和项目级 MCP Server 配置，并进行 `${VAR}` 环境变量展开。
-- F2: stdio 传输启动本地子进程，通过 stdin/stdout 收发换行分隔 JSON-RPC。
-- F3: HTTP 传输通过 POST 发送 JSON-RPC，请求头支持配置。
-- F4: JSON-RPC 请求 id 自增，响应按 id 关联。
-- F5: 客户端初始化后调用 `tools/list` 获取工具。
-- F6: 每个远端工具包装为 `McpToolAdapter` 并注册到 `ToolRegistry`。
-- F7: Agent 调用 MCP 工具时执行 `tools/call`，结果转换为 `ToolResult`。
-- F8: 单个 Server 初始化、列工具或调用失败时，不影响其他 Server。
-
-## 不做
-
-- 不做 MCP resources。
-- 不做 MCP prompts。
-- 不做 MCP sampling。
-- 不做健康检查。
-- 不做自动重连。
+- F1: 配置解析：读取用户级和项目级 MCP 配置，合并后 `${VAR}` 展开
+- F2: stdio 传输：通过 `mcp` 官方 SDK 的 `stdio_client` 启动子进程
+- F3: HTTP 传输：通过官方 SDK 的 `streamablehttp_client` 发送请求
+- F4: 协议流程：初始化握手 → `initialize` → `tools/list` → 注册工具 → `tools/call` 执行
+- F5: 工具注册：远端工具包装为 McpTool，注册到 ToolRegistry
+- F6: 失败隔离：单 Server 连接失败打 warn 跳过，不影响其他 Server
+- F7: 同步桥接：当前 Agent 为同步接口，通过后台 asyncio loop + `run_coroutine_threadsafe` 桥接
+- F8: 只读提示：MCP 工具 `readOnlyHint` 透传给权限系统，default 模式只读工具不弹窗确认
 
 ## 验收标准
 
-- AC1: stdio Server 能完成 initialize、tools/list、tools/call。
-- AC2: HTTP Server 能完成 initialize、tools/list、tools/call。
-- AC3: 工具名注册为 `mcp_<server>_<tool>`，避免和内置工具冲突。
-- AC4: 配置合并时项目级覆盖用户级。
-- AC5: env/header 中的 `${VAR}` 能展开。
-- AC6: Server 失败时启动不中断。
-- AC7: `pytest` 通过，既有内置工具和 Agent Loop 不退化。
+- AC1: stdio Server 能完成 initialize → tools/list → tools/call 全流程
+- AC2: HTTP Server 能完成相同全流程
+- AC3: 工具名注册为 `mcp__<server>__<tool>`，避免冲突
+- AC4: 项目级配置覆盖用户级；`${VAR}` 在 env/headers 中展开
+- AC5: 单 Server 失败不影响启动
+- AC6: `python -m compileall mewcode` 通过；`pytest` 通过
+- AC7: ch6 权限系统行为不退化
+
+## 不做的事
+
+- MCP resources / prompts / sampling
+- Server 健康检查和自动重连
+- 非标准 JSON-RPC 实现
+- 工具调用结果中非 text 类型的富媒体处理

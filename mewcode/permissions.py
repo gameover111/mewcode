@@ -60,6 +60,7 @@ class PermissionRequest:
     tool_name: str
     arguments: dict[str, Any]
     workspace: Path
+    read_only: bool = False
 
 
 PermissionCallback = Callable[[PermissionRequest], tuple[bool, PermissionScope]]
@@ -256,10 +257,10 @@ class PermissionManager:
         if rule_decision is not None:
             return rule_decision
 
-        fallback = _mode_fallback(self.mode, _tool_category(request.tool_name))
+        fallback = _mode_fallback(self.mode, _tool_category(request))
         if fallback == PermissionAction.ALLOW:
             return PermissionDecision(True, "", action=PermissionAction.ALLOW)
-        return self._ask_or_deny(request, _ask_reason(self.mode, request.tool_name))
+        return self._ask_or_deny(request, _ask_reason(self.mode, request))
 
     def _check_rules(self, request: PermissionRequest) -> PermissionDecision | None:
         for source, rules in (
@@ -388,7 +389,10 @@ def _friendly_tool_name(name: str) -> str:
     return aliases.get(name, name)
 
 
-def _tool_category(tool_name: str) -> ToolCategory:
+def _tool_category(request: PermissionRequest) -> ToolCategory:
+    if request.read_only:
+        return ToolCategory.READ
+    tool_name = request.tool_name
     if tool_name in {"read_file", "find_files", "search_code"}:
         return ToolCategory.READ
     if tool_name in {"write_file", "replace_in_file"}:
@@ -406,8 +410,8 @@ def _mode_fallback(mode: PermissionMode, category: ToolCategory) -> PermissionAc
     return PermissionAction.ASK
 
 
-def _ask_reason(mode: PermissionMode, tool_name: str) -> str:
-    category = _tool_category(tool_name).value
+def _ask_reason(mode: PermissionMode, request: PermissionRequest) -> str:
+    category = _tool_category(request).value
     return f"{mode.value} \u6a21\u5f0f\u4e0b {category} \u7c7b\u64cd\u4f5c\u9700\u786e\u8ba4"
 
 

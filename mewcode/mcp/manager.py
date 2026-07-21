@@ -12,8 +12,8 @@ from mewcode.mcp.config import Config, ServerConfig
 from mewcode.mcp.tool import McpTool, adapt_tool
 
 
-connect_timeout: float = 30.0
-close_timeout: float = 5.0
+connect_timeout: float = 120.0
+close_timeout: float = 10.0
 
 
 @dataclass
@@ -75,6 +75,10 @@ class Manager:
                 f"[mcp] warn: close timeout ({close_timeout}s), some sessions may leak",
                 file=sys.stderr,
             )
+        except RuntimeError:
+            pass
+        except Exception as exc:
+            print("[mcp] warn: close error: {exc}", file=sys.stderr)
 
 
 async def new_manager(cfg: Config, version: str) -> Manager:
@@ -150,3 +154,4 @@ async def _enter_transport(stack: AsyncExitStack, server: ServerConfig) -> tuple
 async def _await_threadsafe(coro, loop: asyncio.AbstractEventLoop) -> Any:
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return await asyncio.wrap_future(future)
+    

@@ -12,6 +12,11 @@
 # - 工具命名：mcp__<server>__<tool>
 
 mcp_servers:
+  context7:
+    type: stdio
+    command: npx
+    args: ["-y", "@upstash/context7-mcp"]
+    
   # stdio 示例：本地子进程 MCP Server
   filesystem:
     type: stdio

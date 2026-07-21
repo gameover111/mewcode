@@ -12,3 +12,5 @@ build/
 mewcode.yaml
 tmp.e2e.*.yaml
 .mewcode/settings.local.yaml
+
+gitflow_doc/
