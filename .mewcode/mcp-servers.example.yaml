@@ -1,0 +1,32 @@
+﻿# MCP Server 标准配置示例
+#
+# 用户级：~/.mewcode/config.yaml
+# 项目级：<project_root>/.mewcode.yaml
+#
+# 说明：
+# - type 必须为 stdio 或 http
+# - stdio 必须填 command；args 和 env 可选
+# - http 必须填 url；headers 可选
+# - env 和 headers 的值支持 ${VAR} 环境变量展开
+# - 项目级同名 Server 覆盖用户级
+# - 工具命名：mcp__<server>__<tool>
+
+mcp_servers:
+  # stdio 示例：本地子进程 MCP Server
+  filesystem:
+    type: stdio
+    command: npx
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "."
+    env:
+      # 环境变量展开：从系统环境读取
+      MY_TOKEN: "${MY_TOKEN}"
+
+  # HTTP 示例：远程 MCP Server
+  remote-api:
+    type: http
+    url: "https://mcp.example.com/mcp"
+    headers:
+      Authorization: "Bearer ${API_TOKEN}"

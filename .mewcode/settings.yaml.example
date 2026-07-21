@@ -1,0 +1,11 @@
+default_mode: default
+
+permissions:
+  allow:
+    - Bash(git *)
+    - Bash(pytest)
+    - Write(src/**)
+  deny:
+    - Bash(git push)
+    - Read(.env)
+    - Write(.env)

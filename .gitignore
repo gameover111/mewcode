@@ -11,3 +11,4 @@ build/
 .env
 mewcode.yaml
 tmp.e2e.*.yaml
+.mewcode/settings.local.yaml

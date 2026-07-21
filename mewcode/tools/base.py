@@ -18,6 +18,7 @@ class ToolContext:
     workspace: Path
     timeout_seconds: float = 10.0
     max_output_chars: int = 20000
+    permission_manager: Any | None = None
 
 
 class ToolError(Exception):
@@ -44,4 +45,3 @@ def run_tool(tool: Tool, arguments: dict[str, Any], context: ToolContext) -> Too
             summary=f"工具 {tool.name} 执行异常",
             error=f"{type(exc).__name__}: {exc}",
         )
-

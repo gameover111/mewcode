@@ -90,6 +90,38 @@ def test_openai_provider_parses_streaming_tool_call_fragments():
     assert tool_events[0].tool_call.arguments_json == '{"path":"README.md"}'
 
 
+def test_openai_provider_flushes_tool_calls_before_usage_done():
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = "\n".join(
+            [
+                (
+                    'data: {"usage":{"prompt_tokens":1,"completion_tokens":2},'
+                    '"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+                    '"function":{"name":"find_files","arguments":"{\\"pattern\\":\\"*.py\\"}"}}]},'
+                    '"finish_reason":"tool_calls"}]}'
+                ),
+                "data: [DONE]",
+            ]
+        )
+        return httpx.Response(200, content=content)
+
+    provider = OpenAIProvider(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    events = list(
+        provider.stream_chat(
+            ChatRequest(
+                config=config(),
+                messages=[ChatMessage(role="user", content="找 Python 文件")],
+            )
+        )
+    )
+
+    assert [event.type for event in events] == ["tool_call", "done"]
+    assert events[0].tool_call is not None
+    assert events[0].tool_call.name == "find_files"
+    assert events[1].usage is not None
+    assert events[1].usage.input_tokens == 1
+
+
 def test_openai_provider_keeps_text_streaming_behavior():
     def handler(request: httpx.Request) -> httpx.Response:
         content = "\n".join(

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 
 import httpx
 
-from mewcode.providers.base import ChatMessage, ChatRequest, ProviderError, ProviderEvent, ToolCall
+from mewcode.providers.base import ChatMessage, ChatRequest, ProviderError, ProviderEvent, ToolCall, Usage
 from mewcode.providers.sse import iter_sse_data_lines
 
 
@@ -77,10 +77,11 @@ class OpenAIProvider:
 
     def _iter_events(self, response: httpx.Response) -> Iterator[ProviderEvent]:
         tool_call_parts: dict[int, dict[str, str]] = {}
+        final_usage: Usage | None = None
         for data_line in iter_sse_data_lines(response):
             if data_line == "[DONE]":
                 yield from _flush_tool_calls(tool_call_parts)
-                yield ProviderEvent(type="done")
+                yield ProviderEvent(type="done", usage=final_usage)
                 return
 
             try:
@@ -100,12 +101,11 @@ class OpenAIProvider:
                 cached_tokens = 0
                 if isinstance(prompt_details, dict):
                     cached_tokens = prompt_details.get("cached_tokens", 0) or 0
-                from mewcode.providers.base import Usage as _Usage
-                yield ProviderEvent(type="done", usage=_Usage(
+                final_usage = Usage(
                     input_tokens=usage_data.get("prompt_tokens", 0) or 0,
                     output_tokens=usage_data.get("completion_tokens", 0) or 0,
                     cache_read=cached_tokens,
-                ))
+                )
             
             for choice in data.get("choices", []):
                 for tool_delta in choice.get("delta", {}).get("tool_calls", []) or []:

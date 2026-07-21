@@ -17,6 +17,7 @@ from mewcode.providers.base import (
     ProviderEvent,
     ToolCall,
 )
+from mewcode.permissions import PermissionMode, PermissionRequest, parse_permission_mode
 from mewcode.tools.base import ToolContext, ToolResult, run_tool
 from mewcode.tools.registry import ToolRegistry
 from mewcode.prompts import (
@@ -27,6 +28,18 @@ from mewcode.prompts import (
     PLAN_REMINDER_INTERVAL,
 )
 from mewcode.providers.base import SystemPrompt
+
+AgentEventType = Literal[
+    "user_message",
+    "thinking",
+    "text",
+    "tool_start",
+    "tool_result",
+    "final",
+    "error",
+    "cancelled",
+    "done",
+]
 
 @dataclass(frozen=True)
 class AgentEvent:
@@ -41,6 +54,7 @@ class AgentEvent:
 class AgentOptions:
     max_rounds: int = 8
     plan_only: bool = False
+    permission_mode: str | None = None
     overall_timeout_seconds: float | None = None
     per_round_timeout_seconds: float | None = None
 
@@ -100,14 +114,14 @@ def execute_tool_calls(
         with ThreadPoolExecutor(max_workers=len(read_calls)) as pool:
             def _do_read(idx_tc):
                 orig_idx, tc = idx_tc
-                return orig_idx, tc, _exec_one(tc, registry, context, plan_only, hooks)
+                return orig_idx, tc, _exec_one_checked_v2(tc, registry, context, plan_only, hooks)
             futures = [pool.submit(_do_read, item) for item in read_calls]
             for fut in as_completed(futures):
                 orig_idx, tc, tr = fut.result()
                 results[orig_idx] = tr
 
     for orig_idx, tc in write_calls:
-        tr = _exec_one(tc, registry, context, plan_only, hooks)
+        tr = _exec_one_checked_v2(tc, registry, context, plan_only, hooks)
         results[orig_idx] = tr
 
     return [(tc, results[i]) for i, tc in enumerate(tool_calls)]
@@ -163,6 +177,148 @@ def _exec_one(
     return result
 
 
+def _exec_one_checked(
+    tc: ToolCall,
+    registry: ToolRegistry,
+    context: ToolContext,
+    plan_only: bool,
+    hooks: ToolExecutionHooks | None,
+) -> ToolResult:
+    if hooks and hooks.before_tool:
+        hook_result = hooks.before_tool(tc)
+        if hook_result is not None:
+            if hooks.after_tool:
+                hooks.after_tool(tc, hook_result)
+            return hook_result
+
+    tool = registry.get(tc.name)
+    if tool is None:
+        result = ToolResult(ok=False, summary=f"未知工具：{tc.name}", error=f"工具未注册：{tc.name}")
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    try:
+        arguments = json.loads(tc.arguments_json or "{}")
+    except json.JSONDecodeError as exc:
+        result = ToolResult(ok=False, summary=f"工具参数不是合法 JSON：{tc.name}", error=str(exc))
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+    if not isinstance(arguments, dict):
+        result = ToolResult(ok=False, summary=f"工具参数必须是 JSON 对象：{tc.name}", error="工具参数必须是 JSON 对象。")
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    permission_manager = getattr(context, "permission_manager", None)
+    if permission_manager is not None:
+        decision = permission_manager.check(
+            PermissionRequest(
+                tool_name=tc.name,
+                arguments=arguments,
+                workspace=context.workspace,
+            )
+        )
+        if not decision.allowed:
+            result = ToolResult(
+                ok=False,
+                summary=f"权限拒绝：{tc.name}",
+                error=decision.reason,
+                data={"permission_denied": True, "reason": decision.reason},
+            )
+            if hooks and hooks.after_tool:
+                hooks.after_tool(tc, result)
+            return result
+
+    if plan_only and tool_kind(tc.name) == "write":
+        result = ToolResult(
+            ok=False,
+            summary=f"[plan-only] 工具 {tc.name} 已被拦截：当前为 plan-only 模式，不允许执行写操作。请关闭 --plan-only 后再执行。",
+            error="plan-only 模式：写类工具不允许执行",
+            data={"plan_only_denied": True},
+        )
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    result = run_tool(tool, arguments, context)
+    if hooks and hooks.after_tool:
+        hooks.after_tool(tc, result)
+    return result
+
+
+def _exec_one_checked_v2(
+    tc: ToolCall,
+    registry: ToolRegistry,
+    context: ToolContext,
+    plan_only: bool,
+    hooks: ToolExecutionHooks | None,
+) -> ToolResult:
+    if hooks and hooks.before_tool:
+        hook_result = hooks.before_tool(tc)
+        if hook_result is not None:
+            if hooks.after_tool:
+                hooks.after_tool(tc, hook_result)
+            return hook_result
+
+    try:
+        arguments = json.loads(tc.arguments_json or "{}")
+    except json.JSONDecodeError as exc:
+        result = ToolResult(ok=False, summary=f"工具参数不是合法 JSON：{tc.name}", error=str(exc))
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+    if not isinstance(arguments, dict):
+        result = ToolResult(ok=False, summary=f"工具参数必须是 JSON 对象：{tc.name}", error="工具参数必须是 JSON 对象。")
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    permission_manager = getattr(context, "permission_manager", None)
+    if permission_manager is not None:
+        decision = permission_manager.check(
+            PermissionRequest(
+                tool_name=tc.name,
+                arguments=arguments,
+                workspace=context.workspace,
+            )
+        )
+        if not decision.allowed:
+            result = ToolResult(
+                ok=False,
+                summary=f"权限拒绝：{tc.name}",
+                error=decision.reason,
+                data={"permission_denied": True, "reason": decision.reason},
+            )
+            if hooks and hooks.after_tool:
+                hooks.after_tool(tc, result)
+            return result
+
+    tool = registry.get(tc.name)
+    if tool is None:
+        result = ToolResult(ok=False, summary=f"未知工具：{tc.name}", error=f"工具未注册：{tc.name}")
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    if plan_only and tool_kind(tc.name) == "write":
+        result = ToolResult(
+            ok=False,
+            summary=f"[plan-only] 工具 {tc.name} 已被拦截：当前为 plan-only 模式，不允许执行写操作。请关闭 --plan-only 后再执行。",
+            error="plan-only 模式：写类工具不允许执行",
+            data={"plan_only_denied": True},
+        )
+        if hooks and hooks.after_tool:
+            hooks.after_tool(tc, result)
+        return result
+
+    result = run_tool(tool, arguments, context)
+    if hooks and hooks.after_tool:
+        hooks.after_tool(tc, result)
+    return result
+
+
 def _tool_result_to_json(result: ToolResult) -> str:
     return json.dumps(
         {"ok": result.ok, "summary": result.summary, "data": result.data, "error": result.error},
@@ -183,6 +339,8 @@ def stream_agent_reply(
     opts = options or AgentOptions()
     ctrl = control or AgentControl()
     state = AgentRunState()
+    permission_mode = parse_permission_mode(opts.permission_mode)
+    effective_plan_only = opts.plan_only or permission_mode == PermissionMode.PLAN
 
     # 构建稳定系统提示（跨轮不变，走缓存）
     _stable_prompt = build_system_prompt()
@@ -216,14 +374,14 @@ def stream_agent_reply(
 
         # 计算本轮 reminder
         _reminder = ""
-        if opts.plan_only and should_inject_plan_reminder(state.round_index):
+        if effective_plan_only and should_inject_plan_reminder(state.round_index):
             _is_full = (state.round_index == 1 or (state.round_index - 1) % PLAN_REMINDER_INTERVAL == 0)
             _reminder = plan_reminder(full=_is_full)
         
         request = ChatRequest(
             messages=conversation.snapshot(),
             config=config,
-            tools=registry.to_openai_tools() if not opts.plan_only else _filter_read_tools(registry),
+            tools=registry.to_openai_tools() if not effective_plan_only else _filter_read_tools(registry),
             tool_choice="auto",
             system=SystemPrompt(stable=_stable_prompt, environment=_env.render()),
             reminder=_reminder,
@@ -285,7 +443,7 @@ def stream_agent_reply(
             round_tool_calls,
             registry,
             context,
-            plan_only=opts.plan_only,
+            plan_only=effective_plan_only,
             hooks=hooks,
         )
 
